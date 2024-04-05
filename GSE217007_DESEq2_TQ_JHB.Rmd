@@ -1,6 +1,6 @@
 ---
 title: "Basic differential expression Analysis of RNAseq data with DESeq2"
-author: "PhD Júlia Hernández and Phd Tania Quesada-López"
+author: "PhD Júlia Hernández and PhD Tania Quesada-López"
 date: "15.03.2024 - 03.04.2024"
 output: html_document
 ---
