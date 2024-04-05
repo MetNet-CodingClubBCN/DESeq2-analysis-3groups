@@ -24,7 +24,7 @@ The values in the matrix should be raw counts of sequencing reads/fragments. Thi
 
 ```{r}
 ## Set my working directory
-#setwd("C:/Users/Julia/Desktop/MNCC")
+#setwd("C:/Users/.../MNCC")
 
 ## Load my raw counts
 library(readr)
