@@ -1,0 +1,394 @@
+---
+title: "Basic differential expression Analysis of RNAseq data with DESeq2"
+author: "PhD Júlia Hernández and Phd Tania Quesada-López"
+date: "15.03.2024 - 03.04.2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Analyzing RNA-seq data with DESeq2
+Michael I. Love, Simon Anders, and Wolfgang Huber
+03/06/2024
+
+For detailed explanation, check: 
+https://www.bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#shrink
+
+FIRST
+Set your working directory and load RNAseq data.
+
+The values in the matrix should be raw counts of sequencing reads/fragments. This is important for DESeq2’s statistical model to hold, as only counts allow assessing the measurement precision correctly. It is important to never provide counts that were pre-normalized for sequencing depth/library size, as the statistical model is most powerful when applied to un-normalized counts, and is designed to account for library size differences internally. "Love MI. 2015; F1000Res. Version 1. 4: 1070.
+
+
+```{r}
+## Set my working directory
+#setwd("C:/Users/Julia/Desktop/MNCC")
+
+## Load my raw counts
+library(readr)
+
+GSE217007_gene_expression <- read.delim("GSE217007_gene_expression.txt")
+view(GSE217007_gene_expression)
+
+# Raw counts. REMEMBER! [i,j] == [rows(genes),columns(samples)]
+countdata <- GSE217007_gene_expression[, c(2, 15:23)] 
+countdata <- countdata[ !duplicated(countdata$gene_name), ] # Remove duplicate genes and keep rows with higher levels of expression
+# This step is necessary for having row names as gene names, it doesn't allow duplicates
+```
+
+Load Coldata or the experiment information
+Check that order is the same (columns in countdata are in same order as rows in metadada).
+
+```{r}
+## Load Coldata or the experiment information
+require(tibble) 
+library(readxl)
+
+GSE217007_metadata <- read_excel("GSE217007_metadata.xlsx")
+#view(GSE217007_metadata)
+meta <- column_to_rownames(as.data.frame(GSE217007_metadata), var="SampleID") # Create a data frame with the sample IDs as row names
+# view(meta)
+
+# Confirm sample order in count data data frame and row order in col Data are the same.
+colnames(countdata)[2:10] == GSE217007_metadata$SeqID
+
+```
+
+Prepare countdata.
+Genes as rownames and set as numeric matrix.
+Then, remove genes with very low counts.
+Plot the data.
+Set sample IDs instead of seq IDs, if needed. 
+
+```{r}
+### Get the gene names as row names 
+countdata <-as.data.frame(countdata)
+  countdata <- remove_rownames(countdata)
+    countdata <- column_to_rownames(countdata, var = "gene_name") 
+      countdata <- as.data.frame(countdata) 
+
+# Remove very lowly expressed genes as a matrix (format for DESeq2)
+require(dplyr)
+countdata <- as.matrix(countdata[apply(countdata,1,max)>5,]) # Samples should have at least 5 reads. General analysis use between 10 and 20 reads.
+### Data should be presented as a NUMERIC matrix to DESeq 
+
+boxplot(countdata) #to box-plot counts
+
+#  Inspect quality and stats before running analysis
+data <- as.data.frame(countdata)
+colnames(data) <- rownames(meta) # set column names in data as rownames in meta
+
+```
+Check data type.
+RNAseq data does not show normal distribution. Gamma-poisson distributions. Negative binomial type of analysis is applied. 
+
+```{r}
+# Mean versus variance of the data.
+# This is to assess weather we go for Poisson model (mean=variance) or Negative Binomial (mean!=variance) 
+require(ggplot2)
+mean_counts <- apply(data[, 1:9], 1, mean)
+variance_counts <- apply(data[, 1:9], 1, var)
+df <- data.frame(mean_counts, variance_counts)
+ggplot(df) +
+  geom_point(aes(x=mean_counts, y=variance_counts)) + 
+  geom_line(aes(x=mean_counts, y=mean_counts, color="red")) +
+  scale_y_log10() +
+  scale_x_log10()
+
+```
+
+Set the experimental design for your analysis, then create a DESeq object (dds).
+In this case, we are only interested in contrasting the condition, hence "design = ~ Condition".
+
+```{r}
+### Now we can perform differential expression analyses using DESeq2
+# Create DESeq2Dataset object:
+require(DESeq2)
+# Add the data, metadata and the experimental desing # dds is an object with different data (as an excel document)
+### If multiple comparisons are needed, this should be considered in "design="
+dds <- DESeqDataSetFromMatrix(countData = data, colData = meta, design = ~ Condition) # Testing of groups can be performed independently
+
+##Or...  TEST THIS ALTERNATIVE:
+dds <- DESeqDataSetFromMatrix(countData = data, colData = meta, design = ~ Obesity + Hypertension + Obesity:Hypertension)
+
+```
+
+Explore size factors estimations.
+Obtain the normalized counts (expression) adjusted by these size factors. 
+
+
+```{r}
+dds <- estimateSizeFactors(dds) # Needed to normalize library
+sizeFactors(dds)
+
+# Get normalized counts (useful for plotting)
+normalized_counts <- counts(dds, normalized=T)
+colnames(normalized_counts)[1:9] <- paste0("norm_counts_", rownames(meta))
+
+# Add the column of the average normalized counts to df, if necessary
+for(i in c(1,4,7)){ 
+  tmp <- (normalized_counts[,i]+normalized_counts[,i+1]+normalized_counts[,i+2]/3)
+  normalized_counts <- cbind(normalized_counts,tmp)
+}
+colnames(normalized_counts)[10:12] <- c("counts_average_C", "counts_average_O", "counts_average_OH") 
+
+
+```
+
+Save your generated data frame into a .txt or .xlsx file.
+
+```{r}
+# You can print this data == in a txt file 
+write.table(normalized_counts, file="normalizedCounts.txt", sep="\t", quote=F, col.names=NA)
+# Or excel: 
+# you will need to change the type to a data frame, at this point it is a matrix.
+# And have a column with the gene names, else it wont be printed to excel.
+normalized_countsDF <- rownames_to_column(as.data.frame(normalized_counts)) # To create an excel we need a data frame and to convert rownames to a column
+require(writexl)
+write_xlsx(normalized_countsDF,  path =  "normalizedCounts.xlsx",
+           col_names = TRUE, format_headers = TRUE, use_zip64 = FALSE)
+
+```
+
+Make sure comparison levels are correct. Else, re-level.
+
+```{r}
+###### COMPARISONS --> from here on, we will get the results table (fold changes and p values)
+# Corroborate what is set as control (R uses alphabetical and numerical order, you might need to adjust if this is not the case of your groups)
+levels(dds$Condition) 
+# Set the control level first (reference level) 
+dds$Condition <- relevel(dds$Condition, "C") # re-level
+levels(dds$Condition) 
+
+```
+
+Run differential expression analysis.
+
+With DESeq2, the Wald test is the default used for hypothesis testing when comparing two groups. The Wald test is a test of hypothesis usually performed on parameters that have been estimated by maximum likelihood.. In our case we are testing each gene model coefficient (LFC) which was derived using parameters like dispersion which were estimated using maximum likelihood.
+
+https://hbctraining.github.io/DGE_workshop_salmon/lessons/05_DGE_DESeq2_analysis2.html#:~:text=Wald%20test,been%20estimated%20by%20maximum%20likelihood
+
+```{r}
+dds <- DESeq(dds, test= "Wald")
+
+resultsNames(dds) # Check that your comparisons are correct "Condition_Tested_vs_YourControl"
+#Exploring the dispersion estimates and assessing model fit, plot dispersion estimates
+```
+
+Check dispersion estimates.
+
+```{r}
+#Exploring the dispersion estimates and assessing model fit, plot dispersion estimates
+plotDispEsts(dds)## Shrink gene-wise dispersion estimates toward the values predicted by the curve
+#Black dot: without normalization; blue dot: adjusted; red line :ideal adjustment 
+```
+
+Quality controls sanity check.
+
+```{r}
+colSums(counts(dds)) # Total number of raw counts per sample before normalization
+colSums(counts(dds, normalized=T))# Total number of raw counts per sample after normalization
+
+```
+
+Transform normalized counts using the rlog or vstd transformation for data visualization, subsequent clustering analysis.
+
+Plot PCA.
+
+```{r}
+vstd <- vst(dds, blind=TRUE) # Option 1: faster, useful for large experiments. +56 muestras se usa este y se mejora el rendimiento del equipo o +70.000 genes
+colnames(vstd) <- paste0("vstd_",colnames(vstd))
+
+rld <- rlog(dds, blind=TRUE) # Option 2: most common (gold standard)
+colnames(rld) <- paste0("rlog_",colnames(rld))
+
+# Simple PCA-plots for rld an vstd, note that the mild differences. Both are ok. 
+plotPCA(vstd, intgroup = "Condition")
+plotPCA(rld, intgroup = "Condition")
+```
+
+Hierarchical Clustering of Samples, do we have "well-defined" differences?
+
+```{r}
+# Extract the rlog matrix from the object
+rld_mat <- assay(rld)    # assay() is function from the "SummarizedExperiment" package that was loaded when you loaded DESeq2
+# Compute pairwise correlation values
+rld_cor <- cor(rld_mat)    # cor() is a basic R function
+head(rld_cor)   # check the output of cor(), make note of the rownames and colnames
+### and plot as heatmap
+require(pheatmap)
+pheatmap(rld_cor) ### NOTE! Samples cluster in 3 main groups: Our conditions.
+
+```
+Get a file with log transformed data. 
+
+```{r}
+#           DESeq2 calculates "rlog transformed values" - size factor adjusted counts which are log2 transformed.
+rld_assay <- assay(rlog(dds, blind=FALSE))
+colnames(rld_assay) <- paste0("rlog_",colnames(rld_assay))
+
+for(i in c(1,4,7)){
+  tmp <- (rld_assay[,i]+rld_assay[,i+1]+rld_assay[,i+2]+rld_assay[,i+3]+rld_assay[,i+4])/5
+  rld_assay <- cbind(rld_assay,tmp)
+}
+
+colnames(rld_assay)[10:12] <- c("rlog_average_C","rlog_average_O", "rlog_average_OH")
+
+#To create excel file from the obtained transformation
+rld_assay1 <- as.data.frame(rld_assay) # The data should be presented as a data frame
+write_xlsx(rld_assay1, path = tempfile(fileext = "rlog-transformed.xlsx"),
+           col_names = TRUE,
+           format_headers = TRUE,
+           use_zip64 = FALSE)
+```
+
+Explore comparisons.
+Explore library normalization.
+
+```{r}
+# LET'S CHECK THE OUTPUT! --> THE RESULTS
+res<-results(dds)
+head(results(dds, tidy=TRUE)) # To give a look at the results table
+mcols(res, use.names=T) # What are the columns in the results table?
+
+##### Check Outliers
+summary(res)
+
+### Explore candidates
+plotCounts(dds, "LEP", intgroup = "Condition")
+
+# If needed, make a box-plot of the Cook’s distances to see if one sample is consistently higher than others == Outlier
+names(assays(dds))
+cooks <- assays(dds)[["cooks"]]
+par(mar=c(8,5,2,2))
+boxplot(log10(assays(dds)[["cooks"]]), range=0, las=2) # Samples are OK
+
+########################################################################################## 
+# CONTRAST (condition comparisons per gene) 
+# Define contrasts, extract results table, and shrink the log2 fold changes
+#         To identify deferentially expressed genes between conditions: Control and Obese
+resultsNames(dds)
+contrast_Condition <- c("Condition", "O", "C")
+res_Condition_unshrunken <- results(dds, contrast = contrast_Condition, alpha = 0.05) # default adjusted p-value cutoff (FDR) is 0.1
+res_Condition_unshrunken_lfc <- results(dds, contrast = contrast_Condition, alpha = 0.05, lfcThreshold = 0.58, altHypothesis = "greaterAbs")
+
+summary(res_Condition_unshrunken) # Significant p values 
+summary(res_Condition_unshrunken_lfc) # Filter those genes with, at least, 1.5 fold changes
+
+
+#         To identify deferentially expressed genes between conditions: Control and Obese with hypertension
+resultsNames(dds)
+contrast_Condition <- c("Condition", "OH", "C")
+res_Condition_unshrunken <- results(dds, contrast = contrast_Condition, alpha = 0.05) # default adjusted p-value cutoff (FDR) is 0.1
+res_Condition_unshrunken_lfc <- results(dds, contrast = contrast_Condition, alpha = 0.05, lfcThreshold = 0.58, altHypothesis = "greaterAbs")
+
+summary(res_Condition_unshrunken) # Significant p values 
+summary(res_Condition_unshrunken_lfc) # Filter those genes with, at least, 1.5 fold changes
+
+
+#         To identify deferentially expressed genes between conditions: Obese and Obese with hypertension
+resultsNames(dds)
+contrast_Condition <- c("Condition", "OH", "O")
+res_Condition_unshrunken <- results(dds, contrast = contrast_Condition, alpha = 0.05) # default adjusted p-value cutoff (FDR) is 0.1
+res_Condition_unshrunken_lfc <- results(dds, contrast = contrast_Condition, alpha = 0.05, lfcThreshold = 0.58, altHypothesis = "greaterAbs")
+
+summary(res_Condition_unshrunken) # Significant p values 
+summary(res_Condition_unshrunken_lfc) # Filter those genes with, at least, 1.5 fold changes
+
+plotCounts(dds, "LEP", intgroup = "Condition")
+```
+
+Shrinkage is important and helpful for downstream visualization and gene ranking. 
+There are 3 "options" in DESeq2.
+ Note that DEGs don't differ, only their visualization (see MA-plots):
+
+```{r}
+# Normal
+res_Condition_lfcShrink_normal <- lfcShrink(dds, contrast = contrast_Condition, res = res_Condition_unshrunken_lfc, type = "normal")
+#Apeglm
+res_Condition_lfcShrink_apeglm <- lfcShrink(dds, coef = 2, res = res_Condition_unshrunken_lfc, type = "apeglm")
+# ashr
+res_Condition_lfcShrink_ashr <- lfcShrink(dds, coef = 2, res = res_Condition_unshrunken_lfc, type = "ashr")
+summary(res_Condition_lfcShrink_normal) 
+#summary(res_Condition_lfcShrink_apeglm) 
+#summary(res_Condition_lfcShrink_ashr) 
+
+#### MA Plot ----
+require(BiocGenerics)
+plotMA(res_Condition_unshrunken, ylim=c(-9,9)) # Filtered by p
+plotMA(res_Condition_unshrunken_lfc, ylim=c(-9,9)) # Filtered by p and L2FC
+plotMA(res_Condition_lfcShrink_normal, ylim=c(-9,9)) # Normal shrunken results
+#plotMA(res_Condition_lfcShrink_apeglm, ylim=c(-9,9)) # Apegl shrunken results
+#plotMA(res_Condition_lfcShrink_ashr, ylim=c(-9,9)) # Ashr shrunken results
+
+```
+
+Convert the results table into a tibble with gene IDs to get Differentially Expressed Genes
+
+```{r}
+res_Condition_unshrunken_tb <- res_Condition_unshrunken %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble()
+
+# Filtered only by p-value and log2FC (0.58==1.5 fold change)
+res_Condition_unshrunken_lfc_tb <- res_Condition_unshrunken_lfc %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble()
+
+# drop all rows where statistics are not available - these lines are containing too low tag counts and can
+res_Condition_unshrunken_lfc_tb <- res_Condition_unshrunken_lfc_tb[!is.na(res_Condition_unshrunken_lfc_tb$padj),]
+
+```
+
+Get significant DEGs
+
+```{r}
+padj.cutoff <- 0.05
+lfc.cutoff <- 0.58
+
+sig_Condition <- res_Condition_unshrunken_tb %>%
+  filter(padj < padj.cutoff & abs(log2FoldChange) > lfc.cutoff)
+
+sig_Condition # Our final differentially expressed genes
+```
+
+Get a data frame with all data. It will get all comparisons.
+
+```{r}
+FinalData <- cbind(normalized_counts, rld_assay) # Bind normalized expression data
+
+# Extract and add statistics columns
+tmp <- as.data.frame(results(dds, contrast=c("Condition", "O", "C")))    #extract the result element for all the comparisons
+colnames(tmp) <- paste0("O_vs_C", colnames(tmp))                          
+FinalData <- cbind(FinalData, tmp[,])  # Bind this info to the expression data                                      
+
+# Replace all NA's with 1, to avoid conflicts (Remember NA's are placed by DESeq2 if genes are very "unlikely to be differentially expressed)
+FinalData[is.na(FinalData)] <- 1
+
+# Extract and add statistics columns
+tmp <- as.data.frame(results(dds, contrast=c("Condition", "OH", "C")))    #extract the result element for the comparison CE vs RT
+colnames(tmp) <- paste0("OH_vs_C", colnames(tmp))                          
+FinalData <- cbind(FinalData, tmp[,])  # Bind this info to the expression data                                      
+
+# Replace all NA's with 1, to avoid conflicts (Remember NA's are placed by DESeq2 if genes are very "unlikely to be differentially expressed)
+FinalData[is.na(FinalData)] <- 1
+
+# Extract and add statistics columns
+tmp <- as.data.frame(results(dds, contrast=c("Condition", "OH", "O")))    #extract the result element for the comparison
+colnames(tmp) <- paste0("OH_vs_O", colnames(tmp))                          
+FinalData <- cbind(FinalData, tmp[,])  # Bind this info to the expression data                                      
+
+# Replace all NA's with 1, to avoid conflicts (Remember NA's are placed by DESeq2 if genes are very "unlikely to be differentially expressed)
+FinalData[is.na(FinalData)] <- 1
+#Save current data frame with all info as txt 
+write.table(FinalData, row.names=T, col.names=T, sep="\t", quote=F, file="FinalDataframe_GSE217007.txt")
+# If you need to share excel file:
+FinalData2 <- rownames_to_column(as.data.frame(FinalData)) # To create an excel we need a data frame and to convert rownames to a column
+write_xlsx(FinalData2,  path =  "FinalDataframe_GSE217007.xlsx",
+           col_names = TRUE, format_headers = TRUE, use_zip64 = FALSE)
+
+```
